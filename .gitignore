@@ -1,0 +1,17 @@
+# Books / generated audio
+*.pdf
+*.mp3
+*.wav
+
+# Job temp folders
+engine-streaming/jobs/
+engine-batch/.*.tmp/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# macOS
+.DS_Store
