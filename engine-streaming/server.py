@@ -63,14 +63,26 @@ def load_tts():
 
 def extract_text(pdf_path: Path) -> str:
     import fitz
-    doc   = fitz.open(str(pdf_path))
-    pages = [p.get_text() for p in doc if p.get_text().strip()]
-    raw   = "\n".join(pages)
-    # Remove standalone page numbers (e.g. "  42  ")
+    doc = fitz.open(str(pdf_path))
+    pages = []
+    for page in doc:
+        text = page.get_text()
+        if not text.strip():
+            continue
+        # Skip TOC / index pages: if ≥55% of non-empty lines end with a bare
+        # number (and are short), the page is almost certainly a contents page.
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        if len(lines) >= 4:
+            toc_lines = sum(
+                1 for l in lines
+                if re.search(r'\b\d+\s*$', l) and len(l) < 80
+            )
+            if toc_lines / len(lines) >= 0.55:
+                continue   # skip TOC / index page
+        pages.append(text)
+    raw = "\n".join(pages)
+    # Remove standalone page numbers (arabic or roman numerals)
     raw = re.sub(r"^\s*[IVXLCDM]*\d*[IVXLCDM]*\s*$", "", raw, flags=re.MULTILINE | re.IGNORECASE)
-    # Remove TOC/index lines — text followed by leader dots and a page number
-    # e.g. "Chapter One ........... 12"  or  "PART TWO . . . . 88"
-    raw = re.sub(r"^.{0,120}\.{2,}[\s\d]+$", "", raw, flags=re.MULTILINE)
     # Remove lines that are nothing but dots, dashes, underscores (decorative rules)
     raw = re.sub(r"^\s*[.\-_]{3,}\s*$", "", raw, flags=re.MULTILINE)
     # Repair hyphenated line-breaks (e.g. "some-\nthing" → "something")
@@ -118,7 +130,7 @@ def chunk_text(text: str) -> list[str]:
 
 # ─── Job runner (runs in background thread) ────────────────────────────────────
 
-def run_job(job_id: str, pdf_path: Path):
+def run_job(job_id: str, pdf_path: Path, speaker: str = SPEAKER):
     """Convert PDF chunk by chunk, saving each as an MP3 as soon as it's ready."""
     job_dir   = JOBS_DIR / job_id
     state_file = job_dir / "state.json"
@@ -144,8 +156,8 @@ def run_job(job_id: str, pdf_path: Path):
                 # Generate WAV
                 try:
                     kwargs = {"text": chunk, "file_path": str(wav_path)}
-                    if SPEAKER:
-                        kwargs["speaker"] = SPEAKER
+                    if speaker:
+                        kwargs["speaker"] = speaker
                     if LANGUAGE and "multilingual" in MODEL:
                         kwargs["language"] = LANGUAGE
                     tts_model.tts_to_file(**kwargs)
@@ -193,6 +205,8 @@ def upload():
     if tts_lock.locked():
         return jsonify({"error": "A conversion is already in progress. Please wait for it to finish before uploading another file."}), 429
 
+    speaker = request.form.get("speaker", SPEAKER) or SPEAKER
+
     job_id  = uuid.uuid4().hex
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir()
@@ -201,7 +215,7 @@ def upload():
     f.save(str(pdf_path))
 
     # Start conversion in background thread
-    t = threading.Thread(target=run_job, args=(job_id, pdf_path), daemon=True)
+    t = threading.Thread(target=run_job, args=(job_id, pdf_path, speaker), daemon=True)
     t.start()
 
     return jsonify({"job_id": job_id})
@@ -213,6 +227,16 @@ def status(job_id):
     if not state_file.exists():
         abort(404)
     return jsonify(json.loads(state_file.read_text()))
+
+
+@app.route("/voices")
+def voices():
+    """Return sorted list of available TTS speakers."""
+    try:
+        names = list(tts_model.synthesizer.tts_model.speaker_manager.name_to_id)
+        return jsonify(sorted(names))
+    except Exception:
+        return jsonify([])
 
 
 @app.route("/chunk/<job_id>/<int:chunk_index>")
@@ -328,6 +352,19 @@ HTML = """<!DOCTYPE html>
     cursor: pointer; transition: color .2s, border-color .2s;
   }
   .reset-btn:hover { color: #ccc; border-color: #555; }
+
+  /* Narrator selector */
+  .narrator-row {
+    display: flex; align-items: center; gap: .75rem; margin-bottom: 1.2rem;
+  }
+  .narrator-row label { color: #888; font-size: .9rem; white-space: nowrap; }
+  .narrator-row select {
+    flex: 1; background: #222; color: #eee;
+    border: 1px solid #333; border-radius: 8px;
+    padding: .45rem .75rem; font-size: .9rem;
+    cursor: pointer; outline: none;
+  }
+  .narrator-row select:focus { border-color: #7c6af7; }
 </style>
 </head>
 <body>
@@ -335,6 +372,12 @@ HTML = """<!DOCTYPE html>
 <p class="sub">Upload a PDF and start listening within minutes</p>
 
 <div class="card">
+  <!-- Narrator selector -->
+  <div class="narrator-row">
+    <label for="voice-select">Narrator</label>
+    <select id="voice-select"><option value="">Loading voices…</option></select>
+  </div>
+
   <!-- Upload -->
   <div id="drop-zone" onclick="document.getElementById('file-input').click()">
     <div class="icon">📄</div>
@@ -374,6 +417,24 @@ const dropZone  = document.getElementById("drop-zone");
 const fileInput = document.getElementById("file-input");
 const audio     = document.getElementById("audio-player");
 
+// ── Load narrator list ──
+(async function loadVoices() {
+  const sel = document.getElementById("voice-select");
+  try {
+    const voices = await (await fetch("/voices")).json();
+    sel.innerHTML = "";
+    voices.forEach(v => {
+      const opt = document.createElement("option");
+      opt.value = v; opt.textContent = v;
+      if (v === "Daisy Studious") opt.selected = true;
+      sel.appendChild(opt);
+    });
+    if (!sel.options.length) {
+      sel.innerHTML = "<option value=''>Default voice</option>";
+    }
+  } catch { sel.innerHTML = "<option value=''>Default voice</option>"; }
+})();
+
 // ── Drag & drop ──
 dropZone.addEventListener("dragover",  e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
 dropZone.addEventListener("dragleave", ()  => dropZone.classList.remove("drag-over"));
@@ -389,8 +450,10 @@ async function handleFile(file) {
   if (!file.name.endsWith(".pdf")) return alert("Please upload a PDF file.");
   const fd = new FormData();
   fd.append("pdf", file);
+  const speaker = document.getElementById("voice-select").value;
+  if (speaker) fd.append("speaker", speaker);
 
-  showProgress("Uploading...");
+  showProgress("Uploading…");
 
   const res  = await fetch("/upload", { method: "POST", body: fd });
   const data = await res.json();

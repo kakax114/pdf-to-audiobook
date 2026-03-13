@@ -109,10 +109,21 @@ def extract_and_clean(pdf_path: Path) -> str:
     page_limit = MAX_PAGES if MAX_PAGES else len(doc)
     for page in list(doc)[:page_limit]:
         text = page.get_text()
-        if text.strip():
-            pages.append(text)
-        else:
+        if not text.strip():
             skipped += 1
+            continue
+        # Skip TOC / index pages: if ≥55% of non-empty lines end with a bare
+        # number (and are short), the page is almost certainly a contents page.
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        if len(lines) >= 4:
+            toc_lines = sum(
+                1 for l in lines
+                if re.search(r'\b\d+\s*$', l) and len(l) < 80
+            )
+            if toc_lines / len(lines) >= 0.55:
+                warn(f"Page {page.number + 1} looks like TOC/index — skipping")
+                continue
+        pages.append(text)
 
     if skipped:
         warn(f"{skipped} pages skipped (empty / scanned images — no text layer)")
@@ -133,9 +144,6 @@ def extract_and_clean(pdf_path: Path) -> str:
 def _clean(text: str) -> str:
     # Remove standalone page numbers (arabic or roman numerals)
     text = re.sub(r"^\s*[IVXLCDM]*\d*[IVXLCDM]*\s*$", "", text, flags=re.MULTILINE | re.IGNORECASE)
-    # Remove TOC/index lines — text followed by leader dots and a page number
-    # e.g. "Chapter One ........... 12"  or  "PART TWO . . . . 88"
-    text = re.sub(r"^.{0,120}\.{2,}[\s\d]+$", "", text, flags=re.MULTILINE)
     # Remove lines that are nothing but dots, dashes, underscores (decorative rules)
     text = re.sub(r"^\s*[.\-_]{3,}\s*$", "", text, flags=re.MULTILINE)
     # Repair hyphenated line-breaks  (e.g. "some-\nthing" → "something")
