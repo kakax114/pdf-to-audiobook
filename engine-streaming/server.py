@@ -163,6 +163,10 @@ def upload():
     if not f.filename.lower().endswith(".pdf"):
         return jsonify({"error": "Must be a PDF"}), 400
 
+    # Reject if a job is already running
+    if tts_lock.locked():
+        return jsonify({"error": "A conversion is already in progress. Please wait for it to finish before uploading another file."}), 429
+
     job_id  = uuid.uuid4().hex
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir()
@@ -364,7 +368,11 @@ async function handleFile(file) {
 
   const res  = await fetch("/upload", { method: "POST", body: fd });
   const data = await res.json();
-  if (data.error) return alert(data.error);
+  if (data.error) {
+    setStatusText("⚠ " + data.error);
+    document.getElementById("progress-section").style.display = "block";
+    return;
+  }
 
   jobId = data.job_id;
   pollTimer = setInterval(poll, 2000);
