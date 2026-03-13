@@ -178,13 +178,22 @@ def chunk_text(text: str) -> list[str]:
             sep = 0
 
         if sent_len > CHUNK_CHARS:
-            # Single sentence too long — hard-split it
+            # Single sentence too long — split at word boundaries, not mid-char
             if current:
                 chunks.append(" ".join(current))
                 current = []
                 current_len = 0
-            for i in range(0, sent_len, CHUNK_CHARS):
-                chunks.append(sent[i:i + CHUNK_CHARS])
+            wbuf, wlen = [], 0
+            for word in sent.split():
+                wsep = 1 if wbuf else 0
+                if wbuf and wlen + wsep + len(word) > CHUNK_CHARS:
+                    chunks.append(" ".join(wbuf))
+                    wbuf, wlen = [word], len(word)
+                else:
+                    wbuf.append(word)
+                    wlen += wsep + len(word)
+            if wbuf:
+                chunks.append(" ".join(wbuf))
         else:
             current.append(sent)
             current_len += sep + sent_len
@@ -240,6 +249,14 @@ def generate_chunks(tts, chunks: list[str], tmp_dir: Path, resume_path: Path) ->
               if n_done >= 2 else "calculating..."
         progress_bar(i + 1, total, eta)
 
+        # Pre-filter: skip chunks that will confuse xtts_v2
+        alpha = sum(1 for c in chunk if c.isalpha())
+        if len(chunk) < 15 or alpha / len(chunk) < 0.40:
+            continue
+        chunk = re.sub(r'^[^a-zA-Z]+', '', chunk).strip()
+        if not chunk:
+            continue
+
         try:
             kwargs: dict = {"text": chunk, "file_path": str(wav_files[i])}
             if SPEAKER:
@@ -250,6 +267,16 @@ def generate_chunks(tts, chunks: list[str], tmp_dir: Path, resume_path: Path) ->
         except Exception as exc:
             print()   # break progress line
             warn(f"Chunk {i} failed ({exc}) — skipping")
+            wav_files[i].unlink(missing_ok=True)
+            continue
+
+        # Post-filter: xtts_v2 sometimes produces near-silent/garbled audio
+        # for inputs it can't handle. 24kHz 16-bit = 48 KB/s; < 0.5 s → bad.
+        wav_size = wav_files[i].stat().st_size if wav_files[i].exists() else 0
+        if wav_size < 24_000:
+            print()
+            warn(f"Chunk {i} bad audio ({wav_size}B) — skipping")
+            wav_files[i].unlink(missing_ok=True)
             continue
 
         done.add(i)

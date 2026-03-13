@@ -112,13 +112,22 @@ def chunk_text(text: str) -> list[str]:
             sep = 0
 
         if sent_len > CHUNK_CHARS:
-            # Single sentence too long — hard-split it
+            # Single sentence too long — split at word boundaries, not mid-char
             if current:
                 chunks.append(" ".join(current))
                 current = []
                 current_len = 0
-            for i in range(0, sent_len, CHUNK_CHARS):
-                chunks.append(sent[i:i + CHUNK_CHARS])
+            wbuf, wlen = [], 0
+            for word in sent.split():
+                wsep = 1 if wbuf else 0
+                if wbuf and wlen + wsep + len(word) > CHUNK_CHARS:
+                    chunks.append(" ".join(wbuf))
+                    wbuf, wlen = [word], len(word)
+                else:
+                    wbuf.append(word)
+                    wlen += wsep + len(word)
+            if wbuf:
+                chunks.append(" ".join(wbuf))
         else:
             current.append(sent)
             current_len += sep + sent_len
@@ -153,6 +162,16 @@ def run_job(job_id: str, pdf_path: Path, speaker: str = SPEAKER):
                 wav_path = job_dir / f"chunk_{i:05d}.wav"
                 mp3_path = job_dir / f"chunk_{i:05d}.mp3"
 
+                # Pre-filter: skip chunks that will confuse xtts_v2
+                # (too short, or mostly non-alphabetic like stray numbers/symbols)
+                alpha = sum(1 for c in chunk if c.isalpha())
+                if len(chunk) < 15 or alpha / len(chunk) < 0.40:
+                    continue
+                # Strip any leading non-alphabetic garbage (stray numbers etc.)
+                chunk = re.sub(r'^[^a-zA-Z]+', '', chunk).strip()
+                if not chunk:
+                    continue
+
                 # Generate WAV
                 try:
                     kwargs = {"text": chunk, "file_path": str(wav_path)}
@@ -163,6 +182,16 @@ def run_job(job_id: str, pdf_path: Path, speaker: str = SPEAKER):
                     tts_model.tts_to_file(**kwargs)
                 except Exception as e:
                     print(f"  [job {job_id}] chunk {i} failed: {e}")
+                    wav_path.unlink(missing_ok=True)
+                    continue
+
+                # Post-filter: xtts_v2 sometimes produces near-silent or
+                # garbled audio (< ~1 s) for inputs it can't handle.
+                # xtts_v2 outputs 24kHz 16-bit mono = 48 KB/s, so 1 s ≈ 48 KB.
+                wav_size = wav_path.stat().st_size if wav_path.exists() else 0
+                if wav_size < 24_000:   # < ~0.5 s → bad output
+                    print(f"  [job {job_id}] chunk {i} bad audio ({wav_size}B) — skipping")
+                    wav_path.unlink(missing_ok=True)
                     continue
 
                 # WAV → MP3
