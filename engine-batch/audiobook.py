@@ -29,7 +29,7 @@ MODEL       = "tts_models/multilingual/multi-dataset/xtts_v2"  # best quality
 
 SPEAKER     = "Daisy Studious"  # xtts_v2 voice — see full list below
 LANGUAGE    = "en"    # only used by multilingual models
-CHUNK_WORDS = 80      # xtts_v2 has a ~400 token limit; 80 words keeps chunks safely under it
+CHUNK_CHARS = 220     # xtts_v2 has a ~250 char hard limit; stay safely under it
 DISK_WARN_GB = 5      # warn if free disk space is below this (WAV files are large)
 MAX_PAGES   = None    # set to an integer (e.g. 10) to only convert the first N pages
 # ──────────────────────────────────────────────────────────────────────────────
@@ -150,21 +150,38 @@ def chunk_text(text: str) -> list[str]:
     # Split on sentence-ending punctuation
     sentences = re.split(r"(?<=[.!?…])\s+", text)
 
-    chunks, current, count = [], [], 0
+    chunks = []
+    current: list[str] = []
+    current_len = 0
+
     for sent in sentences:
-        w = len(sent.split())
-        if count + w > CHUNK_WORDS and current:
+        sent_len = len(sent)
+        sep = 1 if current else 0   # space that joins sentences
+
+        if current and current_len + sep + sent_len > CHUNK_CHARS:
             chunks.append(" ".join(current))
-            current, count = [sent], w
+            current = []
+            current_len = 0
+            sep = 0
+
+        if sent_len > CHUNK_CHARS:
+            # Single sentence too long — hard-split it
+            if current:
+                chunks.append(" ".join(current))
+                current = []
+                current_len = 0
+            for i in range(0, sent_len, CHUNK_CHARS):
+                chunks.append(sent[i:i + CHUNK_CHARS])
         else:
             current.append(sent)
-            count += w
+            current_len += sep + sent_len
+
     if current:
         chunks.append(" ".join(current))
 
-    avg = sum(len(c.split()) for c in chunks) // max(len(chunks), 1)
+    avg = sum(len(c) for c in chunks) // max(len(chunks), 1)
     ok(f"Chunks created  : {len(chunks)}")
-    ok(f"Avg chunk size  : ~{avg} words")
+    ok(f"Avg chunk size  : ~{avg} chars")
     return chunks
 
 

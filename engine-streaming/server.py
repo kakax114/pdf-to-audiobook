@@ -32,10 +32,10 @@ from flask_sock import Sock
 MODEL       = "tts_models/multilingual/multi-dataset/xtts_v2"  # best quality
 SPEAKER     = "Daisy Studious"
 LANGUAGE    = "en"
-CHUNK_WORDS = 80
+CHUNK_CHARS = 220     # xtts_v2 hard limit is ~250 chars; stay safely under it
 HOST        = "0.0.0.0"
 PORT        = 8080
-JOBS_DIR    = Path("jobs")          # temp storage for job files
+JOBS_DIR    = Path(__file__).parent.parent / "jobs"   # absolute path, always correct
 MAX_UPLOAD_MB = 50
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -76,15 +76,33 @@ def extract_text(pdf_path: Path) -> str:
 
 def chunk_text(text: str) -> list[str]:
     sentences = re.split(r"(?<=[.!?…])\s+", text)
-    chunks, current, count = [], [], 0
+    chunks = []
+    current: list[str] = []
+    current_len = 0
+
     for sent in sentences:
-        w = len(sent.split())
-        if count + w > CHUNK_WORDS and current:
+        sent_len = len(sent)
+        sep = 1 if current else 0   # space that joins sentences
+
+        if current and current_len + sep + sent_len > CHUNK_CHARS:
+            # Flush the current buffer before adding this sentence
             chunks.append(" ".join(current))
-            current, count = [sent], w
+            current = []
+            current_len = 0
+            sep = 0
+
+        if sent_len > CHUNK_CHARS:
+            # Single sentence too long — hard-split it
+            if current:
+                chunks.append(" ".join(current))
+                current = []
+                current_len = 0
+            for i in range(0, sent_len, CHUNK_CHARS):
+                chunks.append(sent[i:i + CHUNK_CHARS])
         else:
             current.append(sent)
-            count += w
+            current_len += sep + sent_len
+
     if current:
         chunks.append(" ".join(current))
     return chunks
