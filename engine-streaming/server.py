@@ -66,10 +66,18 @@ def extract_text(pdf_path: Path) -> str:
     doc   = fitz.open(str(pdf_path))
     pages = [p.get_text() for p in doc if p.get_text().strip()]
     raw   = "\n".join(pages)
-    # Clean
-    raw = re.sub(r"^\s*\d+\s*$", "", raw, flags=re.MULTILINE)
+    # Remove standalone page numbers (e.g. "  42  ")
+    raw = re.sub(r"^\s*[IVXLCDM]*\d*[IVXLCDM]*\s*$", "", raw, flags=re.MULTILINE | re.IGNORECASE)
+    # Remove TOC/index lines — text followed by leader dots and a page number
+    # e.g. "Chapter One ........... 12"  or  "PART TWO . . . . 88"
+    raw = re.sub(r"^.{0,120}\.{2,}[\s\d]+$", "", raw, flags=re.MULTILINE)
+    # Remove lines that are nothing but dots, dashes, underscores (decorative rules)
+    raw = re.sub(r"^\s*[.\-_]{3,}\s*$", "", raw, flags=re.MULTILINE)
+    # Repair hyphenated line-breaks (e.g. "some-\nthing" → "something")
     raw = re.sub(r"-\n", "", raw)
+    # Collapse all remaining newlines to a single space
     raw = re.sub(r"\n+", " ", raw)
+    # Collapse multiple spaces
     raw = re.sub(r" {2,}", " ", raw)
     return raw.strip()
 

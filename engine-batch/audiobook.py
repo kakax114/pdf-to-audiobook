@@ -131,8 +131,13 @@ def extract_and_clean(pdf_path: Path) -> str:
 
 
 def _clean(text: str) -> str:
-    # Remove lines that are just a page number
-    text = re.sub(r"^\s*\d+\s*$", "", text, flags=re.MULTILINE)
+    # Remove standalone page numbers (arabic or roman numerals)
+    text = re.sub(r"^\s*[IVXLCDM]*\d*[IVXLCDM]*\s*$", "", text, flags=re.MULTILINE | re.IGNORECASE)
+    # Remove TOC/index lines — text followed by leader dots and a page number
+    # e.g. "Chapter One ........... 12"  or  "PART TWO . . . . 88"
+    text = re.sub(r"^.{0,120}\.{2,}[\s\d]+$", "", text, flags=re.MULTILINE)
+    # Remove lines that are nothing but dots, dashes, underscores (decorative rules)
+    text = re.sub(r"^\s*[.\-_]{3,}\s*$", "", text, flags=re.MULTILINE)
     # Repair hyphenated line-breaks  (e.g. "some-\nthing" → "something")
     text = re.sub(r"-\n", "", text)
     # Collapse all remaining newlines to a single space
