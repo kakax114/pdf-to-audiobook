@@ -418,10 +418,14 @@ async function poll() {
   if (state.status === "extracting") {
     setStatusText("Extracting text from PDF...");
   } else if (state.status === "converting") {
-    setStatusText(`Generating audio… ${readyChunks.length} / ${totalChunks} chunks ready`);
+    if (readyChunks.length < 2) {
+      setStatusText(`Buffering… ${readyChunks.length} / 2 segments ready — playback starts after 2`);
+    } else {
+      setStatusText(`Generating audio… ${readyChunks.length} / ${totalChunks} chunks ready`);
+    }
     buildChunkList();
-    // Auto-start playing when first chunk is ready
-    if (readyChunks.length > 0 && !isPlaying) startPlaying();
+    // Wait for 2 chunks before starting — avoids stutter gap while seg 2 generates
+    if (readyChunks.length >= 2 && !isPlaying) startPlaying();
   } else if (state.status === "done") {
     clearInterval(pollTimer);
     setStatusText(`Done — ${totalChunks} chunks generated`);
